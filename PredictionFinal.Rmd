@@ -1,0 +1,342 @@
+---
+title: "Kickstarter Prediction"
+author: "Paolo Narciso"
+date: "5/1/2021"
+output: html_document
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+install.packages("data.table")
+install.packages("pROC")
+
+```
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(pROC)
+```
+## 
+IN this project I will explore the characterisitcs of projects on Kickstarter and try to understand what separates the winners from the projects that failed to reach their funding goals. 
+
+
+## <span style="color:blue">Qs for Exploratory Analysis:</span>
+We will start our analysis with the aim of answering the following questions:
+<ol> 1. How many projects were successful on Kickstarter, by year and category.
+2. Which sub-categories raised the most amount of money? 
+3. Projects originate from which countries?
+4. How many projects exceeded their funding goal by 50% or more? 
+5. Did any projects reach $100,000 or more? $1,000,000 or higher? 
+6. What was the average amount contributed by each backer, and how does this change over time? Does this amount differ with categories?
+7. What is the average funding period?</ol>
+
+
+<br />
+<br />
+
+## <span style="color:blue">Predicting success rates:</span>
+Using the answers from the above questions, we will try to create a model that can predict which projects are most likely to be successful.
+<br />
+<br />
+If you like this tutorial, feel free to fork the script. And dont forget to upvote the kernel! :) 
+<br />
+<br />
+
+## <span style="color:blue">Step1 - Data Pre-processing</span>
+###a) Let us take a look at the input dataset :
+```{r, include=TRUE, echo = FALSE}
+#system("ls ../input", intern=TRUE)
+ksdf <- read.csv("ks-projects-201801.csv")
+                     
+
+str(ksdf)
+```
+
+
+
+The projects are divided into main and sub-categories. The pledged amount "usd_pledged" has an equivalent value converted to USD, called "usd_pledged_real". However, the goal amount does not have this conversion. So for now, we will use the amounts as is. <br />
+
+We can see how many people are backing each individual project using the column, "backers". 
+
+###b) Now let us look at the first 5 records:
+The name doesn't really indicate any specific pattern although it might be interesting to see if longer names have better success rates. Not pursuing that angle at this time, though. 
+```{r, include=T, echo = F}
+head(ksdf)
+```
+
+###c) Looking for missing values:
+Hurrah, a really clean dataset, even after searching for "empty" strings. :)
+```{r, include=T, echo=T}
+# Check for NAs:
+sapply(ksdf, function(x) sum(is.na(x)))
+
+# Check for empty strings:
+nrow(subset(ksdf, is.na(ksdf$name)))
+nrow(subset(ksdf, is.na(ksdf$category)))
+nrow(subset(ksdf, is.na(ksdf$main_category)))
+nrow(subset(ksdf, is.na(ksdf$state)))
+```
+
+###d) Date Formatting and splitting:<br />
+We have two dates in our dataset - "launch date" and "deadline date".We convert them from strings to date format.  <br/>We also split these dates into the respective year and month columns, so that we can plot variations over time. 
+<br/>So we will now have 4 new columns: launch_year, launch_month, deadline_year and deadline_month.
+```{r, include=T, echo=F}
+# Converting the launch and deadline Dates to correct format:
+ksdf$launch_date <- as.Date(ksdf$launched, "%Y-%m-%d")
+ksdf$deadline_date <- as.Date(ksdf$deadline, "%Y-%m-%d")
+
+# also addding month and year columns for the deadline and launch dates:
+ksdf$launch_year <- substr(ksdf$launched, 1,4)
+ksdf$launch_mth <- substr(ksdf$launch_date, 1,7)
+
+ksdf$final_year <- substr(ksdf$deadline,1,4)
+ksdf$final_mth <- substr(ksdf$deadline, 1, 7)
+```
+```{r, include=T, echo = F}
+ksdf[1:5, c('ID', 'name', 'main_category', 'launch_year', 'launch_mth', 'final_year', 'final_mth')]
+```
+
+<br />
+<br />
+<br />
+
+
+## <span style="color:blue">Exploratory analysis:</span>
+### a) How many projects are successful?
+```{r, include=T, echo = T}
+prop.table(table(ksdf$state))*100
+```
+
+We see that "failed" and "successful" are the two main categories, comprising ~88% of our dataset.  <br/>
+Sadly we do not know why some projects are marked "undefined" or "canceled".  <br/>
+"live"" projects are those where the deadlines have not yet passed, although a few among them are already achieved their goal. 
+<br / >Surprisingly, some 'canceled' projects had also met their goals (pledged_amount >= goal).  <br/>
+Since these other categories are a very small portion of the dataset, we will subset and only consider records with satus "failed" or "successful" for the rest of the analysis.
+```{r, include=F, echo =F}
+ksdf <- subset(ksdf, state %in% c('failed', 'successful'))
+```
+
+
+
+### b) How many countries have projects on kickstarter?
+```{r, include = T, echo = F}
+table(ksdf$country)
+```
+We see projects are overwhelmingly US. Some country names have the tag N,0"", so marking them as unknown.
+```{r, include = F, echo = F}
+ksdf$country <- ifelse(substr(ksdf$country,1,3) == "N,0", "unk", ksdf$country)
+```
+
+
+### c) Number of projects launched per year:
+```{r, include=T, echo=F}
+table(ksdf$launch_year)
+```
+Looks like some records say dates like 1970, which does not look right. So we discard any records with a launch / deadline year before 2009.
+<br />Plotting the counts per year on a graphs:
+< br />From the graph below, it looks like the count of projects peaked in 2015, then went down. However, this should NOT be taken as an indicator of success rates. 
+```{r}
+library(ggplot2)
+```
+
+```{r, include=T,echo=F}
+ksdf = subset(ksdf, launch_year >= 2009 & final_year >=2009)
+
+ggplot(data=ksdf, aes(x=launch_year)) +
+  geom_bar(colour="black", fill="blue") +
+  ylab('Count') 
+```
+
+<br/>Drilling down a bit more to see count of projects by main_category.
+```{r, include=T,echo=F}
+ggplot(data=ksdf, aes(x=launch_year)) +
+  geom_bar(colour="black", fill="purple") +
+  ylab('Count') +
+  facet_wrap(~main_category)
+```
+<br />Over the years, maximum number of projects have been in the categories:
+<ol> 1. Film & Video
+2. Music
+3. Publishing</ol>
+
+
+<br / >
+
+### d) Number of projects by sub-category: (Top 20 only)
+```{r, include=T,echo=F}
+scdf = data.frame(table(ksdf$category))
+scdf2 = scdf[order(scdf$Freq, decreasing = T),]
+row.names(scdf2) <- NULL
+scdf3 = scdf2[1:20,]
+
+p = ggplot(data=scdf3, aes(x=Var1, y = Freq)) +  geom_bar(colour="black", fill="blue", stat = "identity")
+p + coord_flip()
+```
+<br />The Top 5 sub-categories are:
+<ol>1. Product Design 
+2. Documentary
+3. Music
+4. Tabletop Games (interesting!!!)
+5. Shorts (really?! ) </ol>
+
+<br />
+Let us now see "Status" of projects for these Top 5 sub_categories:<br />
+From the graph below, we see that for category "shorts" and "tabletop games" there are more successfull projects than failed ones.<br />
+```{r, include=T,echo=F}
+scdf3 = scdf2[1:5,]
+m = subset(ksdf, category %in% scdf3$Var1  & state %in% c('failed', 'successful'))
+m2 = data.frame(table(m$category, m$state))
+ggplot(data=m2, aes(x=Var1, y=Freq, fill=Var2)) +
+geom_bar(stat="identity", position=position_dodge())
+```
+
+<br />
+
+### e) Backers by category and sub-category:
+```{r, include=T, echo=F}
+q = ggplot(data = ksdf, aes(x = main_category, y = backers, fill = state)) + 
+    geom_bar(stat= "identity")
+q
+```
+
+<br / >
+<br / >Since there are a lot of sub-categories, let us explore the sub-categories under the main theme "Design"
+```{r, include=T, echo=F}
+n = subset(ksdf, main_category == "Design")
+ggplot(data = n, aes(x = category, y = backers, fill = state)) + 
+    geom_bar(stat= "identity")
+
+```
+
+<br />Product design is not just the sub-category with the highest count of projects, but also the category with the highest success ratio.
+
+
+### f) add flag to see how many got funded more than the goal.
+```{r, include=T, echo=T}
+ksdf$goal_flag <- ifelse(ksdf$pledged >= ksdf$goal, 1, 0)
+prop.table(table(ksdf$goal_flag))*100
+```
+So ~40% of projects reached or surpassed their goal, which matches the number of successful projects .
+
+<br />
+
+### g) Calculate average contribution per backer:
+```{r, include=T, echo=F}
+ksdf$contrib <- ifelse(ksdf$backers > 0, (ksdf$pledged / ksdf$backers), 0)
+ n =subset(ksdf, contrib >0 )
+```
+From the mean, median and max values we quickly see that the median amount contributed by each backer is 
+only ~$40 whereas the mean is higher due to the extreme positive values. 
+The max amount by a single backer is ~$5000. 
+
+```{r, echo = T, include = T}
+summary(ksdf$contrib)
+hist(n$contrib, main = "Histogram for number of contributors")
+```
+
+
+<br / >
+
+### h) Calculate reach_ratio 
+<br />
+The amount per backer is a good start, but what if the goal amount itself is only $1000? Then an average contribution per backer of $50 impies we only need 20 backers.
+<br /> So to better understand the probability of a project's success, we create a derived metric called "reach_ratio". 
+<br /> This takes the average user contribution and compares it against the goal fund amount.
+```{r, include=T, echo=F}
+ksdf$reach_ratio <- ifelse( ksdf$contrib != 0, ((ksdf$contrib / ksdf$goal)*100), 0)
+
+summary(ksdf$reach_ratio)
+```
+
+<br /> We see the median reach_ratio is <1%. Only in the third quartile do we even touch 2%! 
+<br /> Clearly most projects have a very low reach ratio. We could subset for "successful" projects only and check if the reach_ratio is higher.
+<br />
+```{r, include=T, echo=F}
+hist(ksdf$reach_ratio, main = "Histogram of average reach_ratio")
+```
+
+
+
+### i) Number of days to achieve goal:
+```{r, include=T, echo=F}
+ksdf$diff_days <- as.integer(ksdf$deadline_date - ksdf$launch_date)
+hist(ksdf$diff_days)
+```
+
+
+## <span style="color:blue">Predictive Analystics:</span>
+We will apply a very simple decision tree algorithm to our dataset.
+<br / >Since we do not have a separate "test" set, we will split the input dataframe into 2 parts (70/30 split).
+<br />We will use the smaller set to test the accuracy of out algorithm.
+
+```{r, include=T,echo=T}
+ksdf$status = ifelse(ksdf$state == 'failed', 0, 1)
+
+## 70% of the sample size
+smp_size <- floor(0.7 * nrow(ksdf))
+
+## set the seed to make your partition reproductible
+set.seed(486)
+train_ind <- sample(seq_len(nrow(ksdf)), size = smp_size)
+
+train <- ksdf[train_ind, ]
+test <- ksdf[-train_ind, ]
+
+```
+
+```{r}
+install.packages("tree")
+```
+
+```{r, include=T, echo=T}
+library(tree)
+tree1 <- tree(status ~ goal + reach_ratio + category + backers + country + launch_year , data = train)
+summary(tree1)
+```
+
+<br / >Taking a peek at the decision tree rules:
+```{r, include = T, echo=T}
+plot(tree1)
+text(tree1 ,pretty =0)
+tree1
+```
+
+<br />Re-applying the tree rules to the training set itself, we can validate our model:
+```{r, include =T,echo=T}
+Predt <- predict(tree1, train)
+validf <- data.frame( kickstarter_id = train$ID, orig_status = train$status, new_status = Predt)
+validf$new = ifelse(validf$new_status < 0.5, 0, 1)
+
+# contingency Tables:
+table(validf$orig_status, validf$new)
+
+# Area under the curve
+library(pROC)
+auc(validf$orig_status, validf$new)
+```
+From the above tables, we see that the error rate = ~3% and area under curve >= 97%
+
+
+<br />Finally applying the tree rules to the test set, we get the following stats:
+```{r, include =T,echo=T}
+Pred1 <- predict(tree1, test)
+chkdf <- data.frame( kickstarter_id = test$ID, orig_status = test$status, new_status = Pred1)
+chkdf$new = ifelse(chkdf$new_status < 0.5, 0, 1)
+
+# contingency Tables:
+table(chkdf$orig_status, chkdf$new)
+
+# Area under the curve
+library(pROC)
+auc(chkdf$orig_status, chkdf$new)
+```
+From the above tables, we see that still the error rate = ~3% and area under curve >= 97%
+
+
